@@ -1,6 +1,7 @@
 package lndclient
 
 import (
+	"github.com/lightningnetwork/lnd/channeldb"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -8,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -67,12 +68,12 @@ var (
 	// PaymentResultAlreadyPaid is the string result returned by SendPayment
 	// when the payment was already completed in a previous SendPayment
 	// call.
-	PaymentResultAlreadyPaid = htlcswitch.ErrAlreadyPaid.Error()
+	PaymentResultAlreadyPaid = channeldb.ErrAlreadyPaid.Error()
 
 	// PaymentResultInFlight is the string result returned by SendPayment
 	// when the payment was initiated in a previous SendPayment call and
 	// still in flight.
-	PaymentResultInFlight = htlcswitch.ErrPaymentInFlight.Error()
+	PaymentResultInFlight = channeldb.ErrPaymentInFlight.Error()
 
 	paymentPollInterval = 3 * time.Second
 )

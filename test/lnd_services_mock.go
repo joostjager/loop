@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
 
@@ -24,6 +25,7 @@ func NewMockLnd() *LndMockServices {
 	chainNotifier := &mockChainNotifier{}
 	signer := &mockSigner{}
 	invoices := &mockInvoices{}
+	router := &mockRouter{}
 
 	lnd := LndMockServices{
 		LndServices: lndclient.LndServices{
@@ -32,6 +34,7 @@ func NewMockLnd() *LndMockServices {
 			ChainNotifier: chainNotifier,
 			Signer:        signer,
 			Invoices:      invoices,
+			Router:        router,
 			ChainParams:   &chaincfg.TestNet3Params,
 		},
 		SendPaymentChannel:           make(chan PaymentChannelMessage),
@@ -44,6 +47,9 @@ func NewMockLnd() *LndMockServices {
 		SettleInvoiceChannel:         make(chan lntypes.Preimage),
 		SingleInvoiceSubcribeChannel: make(chan *SingleInvoiceSubscription),
 
+		RouterSendPaymentChannel: make(chan RouterPaymentChannelMessage),
+		LookupPaymentChannel:     make(chan LookupPaymentMessage),
+
 		FailInvoiceChannel: make(chan lntypes.Hash, 2),
 		epochChannel:       make(chan int32),
 		Height:             testStartingHeight,
@@ -53,6 +59,7 @@ func NewMockLnd() *LndMockServices {
 	chainNotifier.lnd = &lnd
 	walletKit.lnd = &lnd
 	invoices.lnd = &lnd
+	router.lnd = &lnd
 
 	lnd.WaitForFinished = func() {
 		chainNotifier.WaitForFinished()
@@ -67,6 +74,21 @@ func NewMockLnd() *LndMockServices {
 type PaymentChannelMessage struct {
 	PaymentRequest string
 	Done           chan lndclient.PaymentResult
+}
+
+// RouterPaymentChannelMessage is the data that passed through RouterSendPaymentChannel.
+type RouterPaymentChannelMessage struct {
+	Invoice         string
+	MaxFee          btcutil.Amount
+	MaxCltv         *int32
+	OutgoingChannel *uint64
+}
+
+// LookupPaymentMessage is the data that passed through LookupPaymentChannel.
+type LookupPaymentMessage struct {
+	Hash    lntypes.Hash
+	Updates chan lndclient.PaymentStatus
+	Errors  chan error
 }
 
 // SingleInvoiceSubscription contains the single invoice subscribers
@@ -93,6 +115,9 @@ type LndMockServices struct {
 	RegisterSpendChannel chan *SpendRegistration
 
 	SingleInvoiceSubcribeChannel chan *SingleInvoiceSubscription
+
+	RouterSendPaymentChannel chan RouterPaymentChannelMessage
+	LookupPaymentChannel     chan LookupPaymentMessage
 
 	Height int32
 
