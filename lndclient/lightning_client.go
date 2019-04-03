@@ -35,6 +35,8 @@ type LightningClient interface {
 
 	AddInvoice(ctx context.Context, in *invoicesrpc.AddInvoiceData) (
 		lntypes.Hash, string, error)
+
+	NewAddress(ctx context.Context) (btcutil.Address, error)
 }
 
 // Info contains info about the connected lnd node.
@@ -339,4 +341,28 @@ func (s *lightningClient) AddInvoice(ctx context.Context,
 	}
 
 	return hash, resp.PaymentRequest, nil
+}
+
+func (s *lightningClient) NewAddress(ctx context.Context) (
+	btcutil.Address, error) {
+
+	rpcCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+
+	// TODO: Unused address seems not to be working if a tx was published
+	// but rejected. This is often the case in the republication loops that
+	// are used in loop.
+	resp, err := s.client.NewAddress(rpcCtx, &lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_UNUSED_WITNESS_PUBKEY_HASH,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	addr, err := btcutil.DecodeAddress(resp.Address, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return addr, nil
 }

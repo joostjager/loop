@@ -575,7 +575,7 @@ func (s *loopInSwap) publishTimeoutTx(ctx context.Context,
 
 	if s.timeoutAddr == nil {
 		var err error
-		s.timeoutAddr, err = s.lnd.WalletKit.NextAddr(ctx)
+		s.timeoutAddr, err = s.lnd.Client.NewAddress(ctx)
 		if err != nil {
 			return err
 		}

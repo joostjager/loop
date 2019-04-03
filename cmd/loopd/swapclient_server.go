@@ -44,9 +44,9 @@ func (s *swapClientServer) LoopOut(ctx context.Context,
 	if in.Dest == "" {
 		// Generate sweep address if none specified.
 		var err error
-		sweepAddr, err = s.lnd.WalletKit.NextAddr(context.Background())
+		sweepAddr, err = s.lnd.Client.NewAddress(context.Background())
 		if err != nil {
-			return nil, fmt.Errorf("NextAddr error: %v", err)
+			return nil, fmt.Errorf("NewAddress error: %v", err)
 		}
 	} else {
 		var err error

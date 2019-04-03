@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightninglabs/loop/lndclient"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
@@ -119,4 +120,14 @@ func (h *mockLightningClient) AddInvoice(ctx context.Context,
 	}
 
 	return hash, payReqString, nil
+}
+
+func (h *mockLightningClient) NewAddress(ctx context.Context) (btcutil.Address, error) {
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+		make([]byte, 20), &chaincfg.TestNet3Params,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return addr, nil
 }

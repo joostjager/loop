@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
@@ -43,16 +41,6 @@ func (m *mockWalletKit) DeriveKey(ctx context.Context, in *keychain.KeyLocator) 
 		KeyLocator: *in,
 		PubKey:     pubKey,
 	}, nil
-}
-
-func (m *mockWalletKit) NextAddr(ctx context.Context) (btcutil.Address, error) {
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(
-		make([]byte, 20), &chaincfg.TestNet3Params,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return addr, nil
 }
 
 func (m *mockWalletKit) PublishTransaction(ctx context.Context, tx *wire.MsgTx) error {

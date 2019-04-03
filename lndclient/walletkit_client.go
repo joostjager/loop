@@ -5,7 +5,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightninglabs/loop/swap"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
@@ -21,8 +20,6 @@ type WalletKitClient interface {
 
 	DeriveKey(ctx context.Context, locator *keychain.KeyLocator) (
 		*keychain.KeyDescriptor, error)
-
-	NextAddr(ctx context.Context) (btcutil.Address, error)
 
 	PublishTransaction(ctx context.Context, tx *wire.MsgTx) error
 
@@ -93,25 +90,6 @@ func (m *walletKitClient) DeriveKey(ctx context.Context, in *keychain.KeyLocator
 		KeyLocator: *in,
 		PubKey:     key,
 	}, nil
-}
-
-func (m *walletKitClient) NextAddr(ctx context.Context) (
-	btcutil.Address, error) {
-
-	rpcCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-
-	resp, err := m.client.NextAddr(rpcCtx, &walletrpc.AddrRequest{})
-	if err != nil {
-		return nil, err
-	}
-
-	addr, err := btcutil.DecodeAddress(resp.Addr, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return addr, nil
 }
 
 func (m *walletKitClient) PublishTransaction(ctx context.Context,
