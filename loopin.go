@@ -49,8 +49,6 @@ type loopInSwap struct {
 	swapKit
 
 	loopdb.LoopInContract
-
-	timeoutAddr btcutil.Address
 }
 
 // newLoopInSwap initiates a new loop in swap.
@@ -573,12 +571,9 @@ func (s *loopInSwap) processHtlcSpend(ctx context.Context,
 func (s *loopInSwap) publishTimeoutTx(ctx context.Context,
 	htlc *wire.OutPoint) error {
 
-	if s.timeoutAddr == nil {
-		var err error
-		s.timeoutAddr, err = s.lnd.Client.NewAddress(ctx)
-		if err != nil {
-			return err
-		}
+	timeoutAddr, err := s.lnd.Client.NewAddress(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Calculate sweep tx fee
@@ -595,7 +590,7 @@ func (s *loopInSwap) publishTimeoutTx(ctx context.Context,
 
 	timeoutTx, err := s.sweeper.CreateSweepTx(
 		ctx, s.height, s.htlc, *htlc, s.SenderKey, witnessFunc,
-		s.LoopInContract.AmountRequested, fee, s.timeoutAddr,
+		s.LoopInContract.AmountRequested, fee, timeoutAddr,
 	)
 	if err != nil {
 		return err
@@ -603,7 +598,7 @@ func (s *loopInSwap) publishTimeoutTx(ctx context.Context,
 
 	timeoutTxHash := timeoutTx.TxHash()
 	s.log.Infof("Publishing timeout tx %v with fee %v to addr %v",
-		timeoutTxHash, fee, s.timeoutAddr)
+		timeoutTxHash, fee, timeoutAddr)
 
 	err = s.lnd.WalletKit.PublishTransaction(ctx, timeoutTx)
 	if err != nil {
