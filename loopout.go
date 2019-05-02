@@ -512,6 +512,8 @@ func (s *loopOutSwap) waitForConfirmedHtlc(globalCtx context.Context) (
 func (s *loopOutSwap) waitForHtlcSpendConfirmed(globalCtx context.Context,
 	spendFunc func() error) (*chainntnfs.SpendDetail, error) {
 
+	s.log.Infof("DEBUG: Registering spend ntfn")
+
 	// Register the htlc spend notification.
 	ctx, cancel := context.WithCancel(globalCtx)
 	defer cancel()
@@ -524,6 +526,7 @@ func (s *loopOutSwap) waitForHtlcSpendConfirmed(globalCtx context.Context,
 
 	timerChan := s.timerFactory(republishDelay)
 	for {
+		s.log.Infof("DEBUG: Enter select block")
 		select {
 		// Htlc spend, break loop.
 		case spendDetails := <-spendChan:
@@ -533,17 +536,23 @@ func (s *loopOutSwap) waitForHtlcSpendConfirmed(globalCtx context.Context,
 
 		// Spend notification error.
 		case err := <-spendErr:
+			s.log.Infof("DEBUG: Spend err: %v", err)
+
 			return nil, err
 
 		// New block arrived, update height and restart the republish
 		// timer.
 		case notification := <-s.blockEpochChan:
+			s.log.Infof("DEBUG: Block notification")
+
 			s.height = notification.(int32)
 			timerChan = s.timerFactory(republishDelay)
 
 		// Some time after start or after arrival of a new block, try
 		// to spend again.
 		case <-timerChan:
+			s.log.Infof("DEBUG: Timer fires")
+
 			err := spendFunc()
 			if err != nil {
 				return nil, err
@@ -551,6 +560,8 @@ func (s *loopOutSwap) waitForHtlcSpendConfirmed(globalCtx context.Context,
 
 		// Context canceled.
 		case <-globalCtx.Done():
+			s.log.Infof("DEBUG: Done")
+
 			return nil, globalCtx.Err()
 		}
 	}
