@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/zpay32"
-
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/loop/lndclient"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 var testStartingHeight = int32(600)
@@ -85,7 +85,7 @@ type TrackPaymentMessage struct {
 
 // RouterPaymentChannelMessage is the data that passed through RouterSendPaymentChannel.
 type RouterPaymentChannelMessage struct {
-	lndclient.SendPaymentRequest
+	routing.LightningPayment
 
 	TrackPaymentMessage
 }

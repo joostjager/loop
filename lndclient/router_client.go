@@ -4,27 +4,26 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/routing/route"
-	"time"
 
-	"github.com/lightningnetwork/lnd/channeldb"
-	"google.golang.org/grpc/codes"
-
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lnwire"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 // RouterClient exposes payment functionality.
 type RouterClient interface {
 	// SendPayment attempts to route a payment to the final destination. The
 	// call returns a payment update stream and an error stream.
-	SendPayment(ctx context.Context, request SendPaymentRequest) (
+	SendPayment(ctx context.Context, request *routing.LightningPayment) (
 		chan PaymentStatus, chan error, error)
 
 	// TrackPayment picks up a previously started payment and returns a
@@ -39,15 +38,6 @@ type PaymentStatus struct {
 	Preimage lntypes.Preimage
 	Fee      lnwire.MilliSatoshi
 	Route    *route.Route
-}
-
-// SendPaymentRequest defines the payment parameters for a new payment.
-type SendPaymentRequest struct {
-	Invoice         string
-	MaxFee          btcutil.Amount
-	MaxCltv         *int32
-	OutgoingChannel *uint64
-	Timeout         time.Duration
 }
 
 // routerClient is a wrapper around the generated routerrpc proxy.
@@ -68,19 +58,26 @@ func newRouterClient(conn *grpc.ClientConn,
 // SendPayment attempts to route a payment to the final destination. The call
 // returns a payment update stream and an error stream.
 func (r *routerClient) SendPayment(ctx context.Context,
-	request SendPaymentRequest) (chan PaymentStatus, chan error, error) {
+	request *routing.LightningPayment) (chan PaymentStatus, chan error, error) {
+
+	routeHints := invoicesrpc.CreateRPCRouteHints(request.RouteHints)
 
 	rpcCtx := r.routerKitMac.WithMacaroonAuth(ctx)
 	rpcReq := &routerrpc.SendPaymentRequest{
-		FeeLimitSat:    int64(request.MaxFee),
-		PaymentRequest: request.Invoice,
-		TimeoutSeconds: int32(request.Timeout.Seconds()),
+		FeeLimitSat:    int64(request.FeeLimit),
+		PaymentRequest: string(request.PaymentRequest),
+		Dest:           request.Target[:],
+		Amt:            int64(request.Amount.ToSatoshis()),
+		PaymentHash:    request.PaymentHash[:],
+		FinalCltvDelta: int32(request.FinalCLTVDelta),
+		TimeoutSeconds: int32(request.PayAttemptTimeout.Seconds()),
+		RouteHints:     routeHints,
 	}
-	if request.MaxCltv != nil {
-		rpcReq.CltvLimit = *request.MaxCltv
+	if request.CltvLimit != nil {
+		rpcReq.CltvLimit = int32(*request.CltvLimit)
 	}
-	if request.OutgoingChannel != nil {
-		rpcReq.OutgoingChanId = *request.OutgoingChannel
+	if request.OutgoingChannelID != nil {
+		rpcReq.OutgoingChanId = *request.OutgoingChannelID
 	}
 
 	stream, err := r.client.SendPayment(rpcCtx, rpcReq)
@@ -176,14 +173,14 @@ func unmarshallPaymentStatus(rpcStatus *routerrpc.PaymentStatus) (
 		status.Fee = lnwire.MilliSatoshi(
 			rpcStatus.Route.TotalFeesMsat,
 		)
+	}
 
-		if rpcStatus.Route != nil {
-			route, err := unmarshallRoute(rpcStatus.Route)
-			if err != nil {
-				return nil, err
-			}
-			status.Route = route
+	if rpcStatus.Route != nil {
+		route, err := unmarshallRoute(rpcStatus.Route)
+		if err != nil {
+			return nil, err
 		}
+		status.Route = route
 	}
 
 	return &status, nil

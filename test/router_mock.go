@@ -3,6 +3,7 @@ package test
 import (
 	"github.com/lightninglabs/loop/lndclient"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/routing"
 	"golang.org/x/net/context"
 )
 
@@ -11,14 +12,14 @@ type mockRouter struct {
 }
 
 func (r *mockRouter) SendPayment(ctx context.Context,
-	request lndclient.SendPaymentRequest) (chan lndclient.PaymentStatus,
+	request *routing.LightningPayment) (chan lndclient.PaymentStatus,
 	chan error, error) {
 
 	statusChan := make(chan lndclient.PaymentStatus)
 	errorChan := make(chan error)
 
 	r.lnd.RouterSendPaymentChannel <- RouterPaymentChannelMessage{
-		SendPaymentRequest: request,
+		LightningPayment: *request,
 		TrackPaymentMessage: TrackPaymentMessage{
 			Updates: statusChan,
 			Errors:  errorChan,
