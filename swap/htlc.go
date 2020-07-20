@@ -32,12 +32,45 @@ type ScriptVersion uint8
 const (
 	// HtlcV1 refers to the original version of the HTLC script.
 	HtlcV1 ScriptVersion = iota
+
+	// HtlcV2 refers to the improved version of the HTLC script.
+	HtlcV2
 )
+
+// htlcScript defines an interface for the different HTLC implementations.
+type HtlcScript interface {
+	// genSuccessWitness returns the success script to spend this htlc with
+	// the preimage.
+	genSuccessWitness(receiverSig []byte, preimage lntypes.Preimage) wire.TxWitness
+
+	// genTimeoutWitness returns the timeout script to spend this htlc after
+	// timeout.
+	GenTimeoutWitness(senderKey [33]byte, senderSig []byte) wire.TxWitness
+
+	// isSuccessWitness checks whether the given stack is valid for
+	// redeeming the htlc.
+	IsSuccessWitness(witness wire.TxWitness) bool
+
+	// getScript returns the htlc script.
+	GetScript() []byte
+
+	// maxSuccessWitnessSize returns the maximum witness size for the
+	// success case witness.
+	MaxSuccessWitnessSize() int
+
+	// maxTimeoutWitnessSize returns the maximum witness size for the
+	// timeout case witness.
+	MaxTimeoutWitnessSize() int
+
+	// sequence returns the sequence to spend this htlc.
+	Sequence() uint32
+}
 
 // Htlc contains relevant htlc information from the receiver perspective.
 type Htlc struct {
+	HtlcScript
+
 	Version     ScriptVersion
-	Script      []byte
 	PkScript    []byte
 	Hash        lntypes.Hash
 	OutputType  HtlcOutputType
@@ -55,10 +88,12 @@ var (
 	// the maximum value for cltv expiry to get the maximum (worst case)
 	// script size.
 	QuoteHtlc, _ = NewHtlc(
-		HtlcV1,
+		HtlcV2,
 		^int32(0), quoteKey, quoteKey, quoteHash, HtlcP2WSH,
 		&chaincfg.MainNetParams,
 	)
+
+	ErrInvalidScriptVersion = fmt.Errorf("invalid script version")
 )
 
 // String returns the string value of HtlcOutputType.
@@ -82,25 +117,17 @@ func NewHtlc(version ScriptVersion, cltvExpiry int32,
 	chainParams *chaincfg.Params) (*Htlc, error) {
 
 	var (
-		err    error
-		script []byte
+		err error
 	)
 
-	switch version {
-	case HtlcV1:
-		script, err = swapHTLCScriptV1(
-			cltvExpiry, senderKey, receiverKey, hash,
-		)
-
-	default:
-		return nil, fmt.Errorf("unknown script version: %v", version)
-	}
-
+	htlc, err := newHtlcScript(
+		version, cltvExpiry, senderKey, receiverKey, hash,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	p2wshPkScript, err := input.WitnessScriptHash(script)
+	p2wshPkScript, err := input.WitnessScriptHash(htlc.GetScript())
 	if err != nil {
 		return nil, err
 	}
@@ -158,9 +185,9 @@ func NewHtlc(version ScriptVersion, cltvExpiry int32,
 	}
 
 	return &Htlc{
+		HtlcScript:  htlc,
 		Hash:        hash,
 		Version:     version,
-		Script:      script,
 		PkScript:    pkScript,
 		OutputType:  outputType,
 		ChainParams: chainParams,
@@ -169,7 +196,45 @@ func NewHtlc(version ScriptVersion, cltvExpiry int32,
 	}, nil
 }
 
-// SwapHTLCScriptV1 returns the on-chain HTLC witness script.
+// GenSuccessWitness returns the success script to spend this htlc with
+// the preimage.
+func (h *Htlc) GenSuccessWitness(receiverSig []byte,
+	preimage lntypes.Preimage) (wire.TxWitness, error) {
+
+	if h.Hash != preimage.Hash() {
+		return nil, errors.New("preimage doesn't match hash")
+	}
+
+	return h.genSuccessWitness(receiverSig, preimage), nil
+}
+
+// AddSuccessToEstimator adds a successful spend to a weight estimator.
+func (h *Htlc) AddSuccessToEstimator(estimator *input.TxWeightEstimator) {
+	maxSuccessWitnessSize := h.MaxSuccessWitnessSize()
+
+	switch h.OutputType {
+	case HtlcP2WSH:
+		estimator.AddWitnessInput(maxSuccessWitnessSize)
+
+	case HtlcNP2WSH:
+		estimator.AddNestedP2WSHInput(maxSuccessWitnessSize)
+	}
+}
+
+// AddTimeoutToEstimator adds a timeout spend to a weight estimator.
+func (h *Htlc) AddTimeoutToEstimator(estimator *input.TxWeightEstimator) {
+	maxTimeoutWitnessSize := h.MaxTimeoutWitnessSize()
+
+	switch h.OutputType {
+	case HtlcP2WSH:
+		estimator.AddWitnessInput(maxTimeoutWitnessSize)
+
+	case HtlcNP2WSH:
+		estimator.AddNestedP2WSHInput(maxTimeoutWitnessSize)
+	}
+}
+
+// swapHTLCScriptV1 returns the on-chain HTLC witness script.
 //
 // OP_SIZE 32 OP_EQUAL
 // OP_IF
@@ -215,49 +280,135 @@ func swapHTLCScriptV1(cltvExpiry int32, senderHtlcKey,
 	return builder.Script()
 }
 
-// GenSuccessWitness returns the success script to spend this htlc with the
-// preimage.
-func (h *Htlc) GenSuccessWitness(receiverSig []byte,
-	preimage lntypes.Preimage) (wire.TxWitness, error) {
+// swapHTLCScriptV2 returns the on-chain HTLC V2 witness script.
+//
+// <receiverHtlcKey> OP_CHECKSIG OP_NOTIF
+//   OP_DUP OP_HASH160 <HASH160(senderHtlcKey)> OP_EQUALVERIFY OP_CHECKSIGVERIFY
+//   <cltv timeout> OP_CHECKLOCKTIMEVERIFY
+// OP_ELSE
+//   OP_SIZE <20> OP_EQUALVERIFY OP_HASH160 <ripemd(swapHash)> OP_EQUALVERIFY 1
+//   OP_CHECKSEQUENCEVERIFY
+// OP_ENDIF
+func swapHTLCScriptV2(cltvExpiry int32, senderHtlcKey,
+	receiverHtlcKey [33]byte, swapHash lntypes.Hash) ([]byte, error) {
 
-	if h.Hash != preimage.Hash() {
-		return nil, errors.New("preimage doesn't match hash")
+	builder := txscript.NewScriptBuilder()
+	builder.AddData(receiverHtlcKey[:])
+	builder.AddOp(txscript.OP_CHECKSIG)
+
+	builder.AddOp(txscript.OP_NOTIF)
+
+	builder.AddOp(txscript.OP_DUP)
+	builder.AddOp(txscript.OP_HASH160)
+	senderHtlcKeyHash := sha256.Sum256(senderHtlcKey[:])
+	builder.AddData(input.Ripemd160H(senderHtlcKeyHash[:]))
+
+	builder.AddOp(txscript.OP_EQUALVERIFY)
+	builder.AddOp(txscript.OP_CHECKSIGVERIFY)
+
+	builder.AddInt64(int64(cltvExpiry))
+	builder.AddOp(txscript.OP_CHECKLOCKTIMEVERIFY)
+
+	builder.AddOp(txscript.OP_ELSE)
+
+	builder.AddOp(txscript.OP_SIZE)
+	builder.AddInt64(0x20)
+	builder.AddOp(txscript.OP_EQUALVERIFY)
+	builder.AddOp(txscript.OP_HASH160)
+	builder.AddData(input.Ripemd160H(swapHash[:]))
+	builder.AddOp(txscript.OP_EQUALVERIFY)
+	builder.AddOp(txscript.OP_1)
+
+	builder.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
+
+	builder.AddOp(txscript.OP_ENDIF)
+
+	return builder.Script()
+}
+
+// newHtlcScript instantiates the htlcScript based on the passed version.
+// Returns ErrInvalidScriptVersion if the passed script version is unknown.
+func newHtlcScript(scriptVersion ScriptVersion, cltvExpiry int32, senderKey,
+	receiverKey [33]byte, hash lntypes.Hash) (HtlcScript, error) {
+
+	switch scriptVersion {
+	case HtlcV1:
+		script, err := swapHTLCScriptV1(
+			cltvExpiry, senderKey, receiverKey, hash,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &HtlcScriptV1{
+			script: script,
+		}, nil
+
+	case HtlcV2:
+		script, err := swapHTLCScriptV2(
+			cltvExpiry, senderKey, receiverKey, hash,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &HtlcScriptV2{
+			script: script,
+		}, nil
 	}
+
+	return nil, ErrInvalidScriptVersion
+}
+
+// HtlcScriptV1 encapsulates the htlc v1 script.
+type HtlcScriptV1 struct {
+	script []byte
+}
+
+// genSuccessWitness returns the success script to spend this htlc with
+// the preimage.
+func (h *HtlcScriptV1) genSuccessWitness(receiverSig []byte,
+	preimage lntypes.Preimage) wire.TxWitness {
 
 	witnessStack := make(wire.TxWitness, 3)
 	witnessStack[0] = append(receiverSig, byte(txscript.SigHashAll))
 	witnessStack[1] = preimage[:]
-	witnessStack[2] = h.Script
+	witnessStack[2] = h.script
 
-	return witnessStack, nil
+	return witnessStack
 }
 
-// IsSuccessWitness checks whether the given stack is valid for redeeming the
+// genTimeoutWitness returns the timeout script to spend this htlc after
+// timeout.
+func (h *HtlcScriptV1) GenTimeoutWitness(senderKey [33]byte,
+	senderSig []byte) wire.TxWitness {
+
+	witnessStack := make(wire.TxWitness, 3)
+	witnessStack[0] = append(senderSig, byte(txscript.SigHashAll))
+	witnessStack[1] = []byte{0}
+	witnessStack[2] = h.script
+
+	return witnessStack
+}
+
+// isSuccessWitness checks whether the given stack is valid for redeeming the
 // htlc.
-func (h *Htlc) IsSuccessWitness(witness wire.TxWitness) bool {
+func (h *HtlcScriptV1) IsSuccessWitness(witness wire.TxWitness) bool {
 	if len(witness) != 3 {
 		return false
 	}
 
 	isTimeoutTx := bytes.Equal([]byte{0}, witness[1])
-
 	return !isTimeoutTx
 }
 
-// GenTimeoutWitness returns the timeout script to spend this htlc after
-// timeout.
-func (h *Htlc) GenTimeoutWitness(senderSig []byte) (wire.TxWitness, error) {
-
-	witnessStack := make(wire.TxWitness, 3)
-	witnessStack[0] = append(senderSig, byte(txscript.SigHashAll))
-	witnessStack[1] = []byte{0}
-	witnessStack[2] = h.Script
-
-	return witnessStack, nil
+// GetScript returns the htlc script.
+func (h *HtlcScriptV1) GetScript() []byte {
+	return h.script
 }
 
-// AddSuccessToEstimator adds a successful spend to a weight estimator.
-func (h *Htlc) AddSuccessToEstimator(estimator *input.TxWeightEstimator) {
+// MaxSuccessWitnessSize returns the maximum success witness size.
+func (h *HtlcScriptV1) MaxSuccessWitnessSize() int {
 	// Calculate maximum success witness size
 	//
 	// - number_of_witness_elements: 1 byte
@@ -267,35 +418,103 @@ func (h *Htlc) AddSuccessToEstimator(estimator *input.TxWeightEstimator) {
 	// - preimage: 33 bytes
 	// - witness_script_length: 1 byte
 	// - witness_script: len(script) bytes
-	maxSuccessWitnessSize := 1 + 1 + 73 + 1 + 33 + 1 + len(h.Script)
-
-	switch h.OutputType {
-	case HtlcP2WSH:
-		estimator.AddWitnessInput(maxSuccessWitnessSize)
-
-	case HtlcNP2WSH:
-		estimator.AddNestedP2WSHInput(maxSuccessWitnessSize)
-	}
+	return 1 + 1 + 73 + 1 + 33 + 1 + len(h.script)
 }
 
-// AddTimeoutToEstimator adds a timeout spend to a weight estimator.
-func (h *Htlc) AddTimeoutToEstimator(estimator *input.TxWeightEstimator) {
+// MaxTimeoutWitnessSize return the maximum timeout witness size.
+func (h *HtlcScriptV1) MaxTimeoutWitnessSize() int {
 	// Calculate maximum timeout witness size
 	//
 	// - number_of_witness_elements: 1 byte
-	// - sender_sig_length: 1 byte
+	// - sender_key_length: 1 byte
 	// - sender_sig: 73 bytes
 	// - zero_length: 1 byte
 	// - zero: 1 byte
 	// - witness_script_length: 1 byte
 	// - witness_script: len(script) bytes
-	maxTimeoutWitnessSize := 1 + 1 + 73 + 1 + 1 + 1 + len(h.Script)
+	return 1 + 1 + 73 + 1 + 1 + 1 + len(h.script)
+}
 
-	switch h.OutputType {
-	case HtlcP2WSH:
-		estimator.AddWitnessInput(maxTimeoutWitnessSize)
+// Sequence returns the sequence to spend this htlc.
+func (h *HtlcScriptV1) Sequence() uint32 {
+	return 0
+}
 
-	case HtlcNP2WSH:
-		estimator.AddNestedP2WSHInput(maxTimeoutWitnessSize)
-	}
+// HtlcScriptV2 encapsulates the htlc v2 script.
+type HtlcScriptV2 struct {
+	script []byte
+}
+
+// genSuccessWitness returns the success script to spend this htlc with
+// the preimage.
+func (h *HtlcScriptV2) genSuccessWitness(receiverSig []byte,
+	preimage lntypes.Preimage) wire.TxWitness {
+
+	witnessStack := make(wire.TxWitness, 3)
+	witnessStack[0] = preimage[:]
+	witnessStack[1] = append(receiverSig, byte(txscript.SigHashAll))
+	witnessStack[2] = h.script
+
+	return witnessStack
+}
+
+// isSuccessWitness checks whether the given stack is valid for redeeming the
+// htlc.
+func (h *HtlcScriptV2) IsSuccessWitness(witness wire.TxWitness) bool {
+	isTimeoutTx := len(witness) == 4
+
+	return !isTimeoutTx
+}
+
+// genTimeoutWitness returns the timeout script to spend this htlc after
+// timeout.
+func (h *HtlcScriptV2) GenTimeoutWitness(senderKey [33]byte,
+	senderSig []byte) wire.TxWitness {
+
+	witnessStack := make(wire.TxWitness, 4)
+	witnessStack[0] = append(senderSig, byte(txscript.SigHashAll))
+	witnessStack[1] = senderKey[:]
+	witnessStack[2] = []byte{}
+	witnessStack[3] = h.script
+
+	return witnessStack
+}
+
+// GetScript returns the htlc script.
+func (h *HtlcScriptV2) GetScript() []byte {
+	return h.script
+}
+
+// MaxSuccessWitnessSize returns maximum success witness size.
+func (h *HtlcScriptV2) MaxSuccessWitnessSize() int {
+	// Calculate maximum success witness size
+	//
+	// - number_of_witness_elements: 1 byte
+	// - receiver_sig_length: 1 byte
+	// - receiver_sig: 73 bytes
+	// - preimage_length: 1 byte
+	// - preimage: 33 bytes
+	// - witness_script_length: 1 byte
+	// - witness_script: len(script) bytes
+	return 1 + 1 + 73 + 1 + 33 + 1 + len(h.script)
+}
+
+// MaxTimeoutWitnessSize returns maximum timeout witness size.
+func (h *HtlcScriptV2) MaxTimeoutWitnessSize() int {
+	// Calculate maximum timeout witness size
+	//
+	// - number_of_witness_elements: 1 byte
+	// - sender_key_length: 1 byte
+	// - sender_key: 33 byte
+	// - sender_key_length: 1 byte
+	// - sender_sig: 73 bytes
+	// - zero: 1 byte
+	// - witness_script_length: 1 byte
+	// - witness_script: len(script) bytes
+	return 1 + 1 + 33 + 1 + 73 + 1 + 1 + len(h.script)
+}
+
+// Sequence returns the sequence to spend this htlc.
+func (h *HtlcScriptV2) Sequence() uint32 {
+	return 1
 }
