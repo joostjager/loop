@@ -37,6 +37,7 @@ func (s *Sweeper) CreateSweepTx(
 	sweepTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: htlcOutpoint,
 		SignatureScript:  htlc.SigScript,
+		Sequence:         htlc.Sequence(),
 	})
 
 	// Add output for the destination address.
