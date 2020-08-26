@@ -117,14 +117,23 @@ func NewHtlc(version ScriptVersion, cltvExpiry int32,
 	chainParams *chaincfg.Params) (*Htlc, error) {
 
 	var (
-		err error
+		err  error
+		htlc HtlcScript
 	)
 
-	htlc, err := newHtlcScript(
-		version, cltvExpiry, senderKey, receiverKey, hash,
-	)
-	if err != nil {
-		return nil, err
+	switch version {
+	case HtlcV1:
+		htlc, err = newHTLCScriptV1(
+			cltvExpiry, senderKey, receiverKey, hash,
+		)
+
+	case HtlcV2:
+		htlc, err = newHTLCScriptV2(
+			cltvExpiry, senderKey, receiverKey, hash,
+		)
+
+	default:
+		return nil, errors.New("invalid script version")
 	}
 
 	p2wshPkScript, err := input.WitnessScriptHash(htlc.GetScript())
@@ -246,8 +255,8 @@ func (h *Htlc) AddTimeoutToEstimator(estimator *input.TxWeightEstimator) {
 //    <senderHtlcKey>
 // OP_ENDIF
 // OP_CHECKSIG
-func swapHTLCScriptV1(cltvExpiry int32, senderHtlcKey,
-	receiverHtlcKey [33]byte, swapHash lntypes.Hash) ([]byte, error) {
+func newHTLCScriptV1(cltvExpiry int32, senderHtlcKey,
+	receiverHtlcKey [33]byte, swapHash lntypes.Hash) (*HtlcScriptV1, error) {
 
 	builder := txscript.NewScriptBuilder()
 
@@ -277,7 +286,14 @@ func swapHTLCScriptV1(cltvExpiry int32, senderHtlcKey,
 
 	builder.AddOp(txscript.OP_CHECKSIG)
 
-	return builder.Script()
+	script, err := builder.Script()
+	if err != nil {
+		return nil, err
+	}
+
+	return &HtlcScriptV1{
+		script: script,
+	}, nil
 }
 
 // swapHTLCScriptV2 returns the on-chain HTLC V2 witness script.
@@ -289,8 +305,8 @@ func swapHTLCScriptV1(cltvExpiry int32, senderHtlcKey,
 //   OP_SIZE <20> OP_EQUALVERIFY OP_HASH160 <ripemd(swapHash)> OP_EQUALVERIFY 1
 //   OP_CHECKSEQUENCEVERIFY
 // OP_ENDIF
-func swapHTLCScriptV2(cltvExpiry int32, senderHtlcKey,
-	receiverHtlcKey [33]byte, swapHash lntypes.Hash) ([]byte, error) {
+func newHTLCScriptV2(cltvExpiry int32, senderHtlcKey,
+	receiverHtlcKey [33]byte, swapHash lntypes.Hash) (*HtlcScriptV2, error) {
 
 	builder := txscript.NewScriptBuilder()
 	builder.AddData(receiverHtlcKey[:])
@@ -323,41 +339,14 @@ func swapHTLCScriptV2(cltvExpiry int32, senderHtlcKey,
 
 	builder.AddOp(txscript.OP_ENDIF)
 
-	return builder.Script()
-}
-
-// newHtlcScript instantiates the htlcScript based on the passed version.
-// Returns ErrInvalidScriptVersion if the passed script version is unknown.
-func newHtlcScript(scriptVersion ScriptVersion, cltvExpiry int32, senderKey,
-	receiverKey [33]byte, hash lntypes.Hash) (HtlcScript, error) {
-
-	switch scriptVersion {
-	case HtlcV1:
-		script, err := swapHTLCScriptV1(
-			cltvExpiry, senderKey, receiverKey, hash,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &HtlcScriptV1{
-			script: script,
-		}, nil
-
-	case HtlcV2:
-		script, err := swapHTLCScriptV2(
-			cltvExpiry, senderKey, receiverKey, hash,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &HtlcScriptV2{
-			script: script,
-		}, nil
+	script, err := builder.Script()
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, ErrInvalidScriptVersion
+	return &HtlcScriptV2{
+		script: script,
+	}, nil
 }
 
 // HtlcScriptV1 encapsulates the htlc v1 script.
